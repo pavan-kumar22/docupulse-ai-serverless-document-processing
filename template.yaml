@@ -1,0 +1,246 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: DocuPulse AI Powered Serverless Document Processing Pipeline
+
+Parameters:
+
+  EnvironmentName:
+    Type: String
+    Default: dev
+
+Globals:
+
+  Function:
+    Runtime: python3.14
+    Timeout: 60
+    MemorySize: 512
+    Tracing: Active
+
+Resources:
+
+##########################################################################
+# S3 Bucket
+##########################################################################
+
+  DocuPulseBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "docupulse-${AWS::AccountId}-${AWS::StackName}"
+
+##########################################################################
+# DynamoDB
+##########################################################################
+
+  DocuPulseTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "DocuPulseDocuments-${EnvironmentName}"
+      BillingMode: PAY_PER_REQUEST
+
+      AttributeDefinitions:
+        - AttributeName: invoice_number
+          AttributeType: S
+
+      KeySchema:
+        - AttributeName: invoice_number
+          KeyType: HASH
+
+##########################################################################
+# Dead Letter Queue
+##########################################################################
+
+  DocuPulseDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: DocuPulseDLQSAM
+
+##########################################################################
+# Processing Queue
+##########################################################################
+
+  DocuPulseQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: DocuPulseQueueSAM
+
+      VisibilityTimeout: 120
+
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DocuPulseDLQ.Arn
+        maxReceiveCount: 3
+
+##########################################################################
+# SNS
+##########################################################################
+
+  DocuPulseAlerts:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: DocuPulseAlertsSAM
+
+##########################################################################
+# Lambda
+##########################################################################
+
+  DocuPulseFunction:
+    Type: AWS::Serverless::Function
+
+    Properties:
+
+      FunctionName: DocuPulseProcessorSAM
+
+      CodeUri: lambda/
+
+      Handler: lambda_function.lambda_handler
+
+      Events:
+
+        UploadEvent:
+
+          Type: S3
+
+          Properties:
+
+            Bucket: !Ref DocuPulseBucket
+
+            Events: s3:ObjectCreated:*
+
+      Policies:
+
+        - AWSLambdaBasicExecutionRole
+
+        - Statement:
+
+            ###########################################################
+            # S3
+            ###########################################################
+
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
+                - !GetAtt DocuPulseBucket.Arn
+                - !Sub "${DocuPulseBucket.Arn}/*"
+
+            ###########################################################
+            # DynamoDB
+            ###########################################################
+
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt DocuPulseTable.Arn
+
+            ###########################################################
+            # Bedrock
+            ###########################################################
+
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "*"
+
+            ###########################################################
+            # SQS
+            ###########################################################
+
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !GetAtt DocuPulseQueue.Arn
+                - !GetAtt DocuPulseDLQ.Arn
+
+            ###########################################################
+            # SNS
+            ###########################################################
+
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref DocuPulseAlerts
+
+            ###########################################################
+            # CloudWatch Metrics
+            ###########################################################
+
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+
+            ###########################################################
+            # Parameter Store
+            ###########################################################
+
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource: "*"
+
+            ###########################################################
+            # Secrets Manager
+            ###########################################################
+
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: "*"
+
+      Environment:
+
+        Variables:
+
+          TABLE_NAME: !Ref DocuPulseTable
+
+          QUEUE_URL: !Ref DocuPulseQueue
+
+          DLQ_URL: !Ref DocuPulseDLQ
+
+          SNS_TOPIC_ARN: !Ref DocuPulseAlerts
+
+##########################################################################
+# CloudWatch Logs
+##########################################################################
+
+  DocuPulseLogs:
+
+    Type: AWS::Logs::LogGroup
+
+    Properties:
+
+      LogGroupName: /aws/lambda/DocuPulseProcessorSAM
+
+      RetentionInDays: 14
+
+##########################################################################
+# Outputs
+##########################################################################
+
+Outputs:
+
+  BucketName:
+    Description: S3 Bucket
+    Value: !Ref DocuPulseBucket
+
+  DynamoDBTable:
+    Description: DynamoDB Table
+    Value: !Ref DocuPulseTable
+
+  QueueURL:
+    Description: SQS Queue URL
+    Value: !Ref DocuPulseQueue
+
+  DLQURL:
+    Description: Dead Letter Queue
+    Value: !Ref DocuPulseDLQ
+
+  SNSTopic:
+    Description: SNS Topic
+    Value: !Ref DocuPulseAlerts
+
+  LambdaName:
+    Description: Lambda Function
+    Value: !Ref DocuPulseFunction
