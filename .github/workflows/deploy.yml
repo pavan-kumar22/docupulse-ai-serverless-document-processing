@@ -40,9 +40,13 @@ jobs:
         uses: aws-actions/setup-sam@v2
 
       - name: Validate SAM Template
-        run: sam validate
+        env:
+          AWS_DEFAULT_REGION: ap-south-1
+        run: sam validate --lint
 
       - name: Build SAM Application
+        env:
+          AWS_DEFAULT_REGION: ap-south-1
         run: sam build
 
       - name: Success
